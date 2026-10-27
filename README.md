@@ -1,10 +1,50 @@
-# ForecastIQ
+<div align="center">
 
-### AI-Powered Retail Demand Intelligence
+<img src="assets/forecastiq_banner.png" alt="ForecastIQ Banner" width="100%">
 
-ForecastIQ is a retail demand forecasting application built with Python, machine learning, deep learning, and Streamlit.
+<br><br>
 
-The project explores how forecasting techniques can support retail sales analysis and inventory planning.
+<h1>
+  <img src="assets/forecastiq_logo.png" width="55" alt="ForecastIQ Logo">
+  ForecastIQ
+</h1>
+
+<hr>
+
+<h2>Intelligent Retail Sales Forecasting & Demand Analytics</h2>
+
+<h3>Predict future demand · Compare forecasting models · Optimize inventory decisions</h3>
+
+<br>
+
+<img src="https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white">
+<img src="https://img.shields.io/badge/Streamlit-Dashboard-FF4B4B?logo=streamlit&logoColor=white">
+<img src="https://img.shields.io/badge/XGBoost-Machine%20Learning-F28C28">
+<img src="https://img.shields.io/badge/PyTorch-Deep%20Learning-EE4C2C?logo=pytorch&logoColor=white">
+<img src="https://img.shields.io/badge/Prophet-Time%20Series-785EF0">
+<img src="https://img.shields.io/badge/SARIMA-Statistical%20Forecasting-008B8B">
+
+<br><br>
+
+<p>
+<i>
+An end-to-end machine learning and deep learning platform for forecasting
+retail sales, analyzing demand patterns, comparing predictive models,
+and supporting data-driven inventory decisions.
+</i>
+</p>
+
+<br>
+
+<a href="#installation">Quick Start</a> ·
+<a href="#project-architecture">Architecture</a> ·
+<a href="#model-performance">Model Results</a> ·
+<a href="#dashboard">Dashboard</a> ·
+<a href="#limitations">Limitations</a>
+
+</div>
+
+---
 
 ## Features
 
