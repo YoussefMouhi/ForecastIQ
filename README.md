@@ -57,6 +57,24 @@ The primary objectives are to:
 
 ---
 
+## Technology Stack
+
+| Component | Technologies / Methods |
+|---|---|
+| **Programming** | Python 3.11+ |
+| **Data Processing** | Pandas, NumPy |
+| **Machine Learning** | XGBoost, Scikit-learn |
+| **Statistical Forecasting** | SARIMA, Prophet |
+| **Deep Learning** | PyTorch, LSTM V1, LSTM V2 |
+| **Feature Engineering** | Lag features, rolling statistics, temporal features |
+| **Forecasting Strategies** | Recursive forecasting, direct multi-horizon forecasting |
+| **Model Evaluation** | MAE, WAPE, time-series validation |
+| **Business Intelligence** | Sales analytics, demand forecasting, inventory planning |
+| **Dashboard** | Streamlit, Plotly |
+| **Version Control** | Git, GitHub |
+
+---
+
 ## Key Features
 
 ### Multi-Series Demand Forecasting
