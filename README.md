@@ -151,44 +151,8 @@ ForecastIQ follows a modular architecture separating data processing, model deve
 
 ### Processing Pipeline
 
-```text
-                   RETAIL SALES DATA
-                          |
-                          v
-                  DATA PREPROCESSING
-                          |
-                          v
-                  FEATURE ENGINEERING
-                          |
-           +--------------+--------------+
-           |              |              |
-           v              v              v
-     MACHINE LEARNING  STATISTICAL   DEEP LEARNING
-           |           FORECASTING         |
-           v              |              v
-        XGBoost           |           LSTM V1
-                          |           LSTM V2
-                     +----+----+
-                     |         |
-                     v         v
-                   SARIMA    Prophet
-                     |         |
-           +---------+---------+
-           |
-           v
-       FORECAST GENERATION
-           |
-           v
-       MODEL EVALUATION
-           |
-           v
-      STREAMLIT DASHBOARD
-           |
-     +-----+-----+----------+-----------+
-     |           |          |           |
-     v           v          v           v
-  Forecast    Inventory   Analytics   Comparison
-```
+
+![ForecastIQ Processing Pipeline](assets/forecastiq_pipeline.png)
 
 ### Architecture Components
 
@@ -316,45 +280,8 @@ The model is designed to produce predictions for horizons extending up to 90 day
 
 ### Recursive vs. Direct Forecasting
 
-**LSTM V1**
 
-```text
-Historical Data
-      |
-      v
-   LSTM Model
-      |
-      v
- Prediction t+1
-      |
-      v
- Prediction t+2
-      |
-      v
-      ...
-```
-
-**LSTM V2**
-
-```text
-Historical Data
-      |
-      v
-   LSTM Model
-      |
-      v
- Multi-Horizon Output
-      |
-      +--> Day 1
-      +--> Day 2
-      +--> Day 3
-      |
-      ...
-      |
-      +--> Day 90
-```
-
-The direct approach avoids recursively feeding every generated forecast into the next prediction step.
+![LSTM V1 vs LSTM V2](assets/lstm_v1_vs_v2.png)
 
 ### Production Inference
 
