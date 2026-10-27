@@ -21,6 +21,9 @@
 <img src="https://img.shields.io/badge/Streamlit-Dashboard-FF4B4B?logo=streamlit&logoColor=white">
 <img src="https://img.shields.io/badge/XGBoost-Machine%20Learning-F28C28">
 <img src="https://img.shields.io/badge/PyTorch-Deep%20Learning-EE4C2C?logo=pytorch&logoColor=white">
+<img src="https://img.shields.io/badge/LSTM%20V1-Recursive%20Forecasting-8A2BE2">
+<img src="https://img.shields.io/badge/LSTM%20V2-Multi--Horizon%20Forecasting-007ACC">
+
 <img src="https://img.shields.io/badge/Prophet-Time%20Series-785EF0">
 <img src="https://img.shields.io/badge/SARIMA-Statistical%20Forecasting-008B8B">
 
