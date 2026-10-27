@@ -21,7 +21,7 @@ MODELS_DIR = Path("models")
 MODELS_DIR.mkdir(exist_ok=True)
 
 # ── Load data ────────────────────────────────────────────────────────────────
-print("📦 Loading data...")
+print(" Loading data...")
 df = pd.read_csv("data/train.csv", parse_dates=["date"])
 stores = pd.read_csv("data/stores.csv")
 df = df.merge(stores[["store_nbr", "type"]], on="store_nbr", how="left")
@@ -42,7 +42,7 @@ all_results = []
 # ────────────────────────────────────────────────────────────────────────────
 # 1. SARIMA
 # ────────────────────────────────────────────────────────────────────────────
-print("\n🔹 Training SARIMA...")
+print("\n Training SARIMA...")
 try:
     from statsmodels.tsa.statespace.sarimax import SARIMAX
     sarima_model = SARIMAX(
@@ -57,15 +57,15 @@ try:
     r = evaluate(test["sales"].values, sarima_pred, "SARIMA")
     all_results.append(r)
     sarima_model.save(str(MODELS_DIR / "sarima_model.pkl"))
-    print("  ✅ SARIMA done")
+    print("   SARIMA done")
 except Exception as e:
-    print(f"  ⚠️ SARIMA failed: {e}")
+    print(f"   SARIMA failed: {e}")
     all_results.append({"model": "SARIMA", "MAE": None, "RMSE": None, "MAPE": None})
 
 # ────────────────────────────────────────────────────────────────────────────
 # 2. Prophet
 # ────────────────────────────────────────────────────────────────────────────
-print("\n🔹 Training Prophet...")
+print("\n Training Prophet...")
 try:
     from prophet import Prophet
     prophet_df = train[["date", "sales"]].rename(columns={"date": "ds", "sales": "y"})
@@ -83,15 +83,15 @@ try:
     r = evaluate(test["sales"].values, prophet_pred, "Prophet")
     all_results.append(r)
     joblib.dump(prophet_model, MODELS_DIR / "prophet_model.pkl")
-    print("  ✅ Prophet done")
+    print("   Prophet done")
 except Exception as e:
-    print(f"  ⚠️ Prophet failed: {e}")
+    print(f"   Prophet failed: {e}")
     all_results.append({"model": "Prophet", "MAE": None, "RMSE": None, "MAPE": None})
 
 # ────────────────────────────────────────────────────────────────────────────
 # 3. XGBoost (multi-series, all stores/items)
 # ────────────────────────────────────────────────────────────────────────────
-print("\n🔹 Training XGBoost (full dataset)...")
+print("\n Training XGBoost (full dataset)...")
 try:
     import xgboost as xgb
     from sklearn.preprocessing import LabelEncoder
@@ -129,29 +129,36 @@ try:
     joblib.dump(le_store,  MODELS_DIR / "le_store.pkl")
     joblib.dump(le_item,   MODELS_DIR / "le_item.pkl")
     joblib.dump(XGB_FEATURES, MODELS_DIR / "xgb_features.pkl")
-    print("  ✅ XGBoost done")
+    print("   XGBoost done")
 except Exception as e:
-    print(f"  ⚠️ XGBoost failed: {e}")
+    print(f"   XGBoost failed: {e}")
     all_results.append({"model": "XGBoost", "MAE": None, "RMSE": None, "MAPE": None})
 
 # ────────────────────────────────────────────────────────────────────────────
 # 4. LSTM (PyTorch)
 # ────────────────────────────────────────────────────────────────────────────
-print("\n🔹 Training LSTM (PyTorch)...")
+print("\n Training LSTM (PyTorch)...")
 try:
     import torch
+    torch.set_num_threads(2)
+    torch.set_num_interop_threads(1)
+    print("    PyTorch CPU threads: 2", flush=True)
     import torch.nn as nn
     from torch.utils.data import DataLoader, TensorDataset
     from sklearn.preprocessing import MinMaxScaler
 
     SEQ_LEN = 30
-    EPOCHS   = 30
-    BATCH    = 32
-    DEVICE   = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    EPOCHS = 10
+    BATCH = 64
+
+    DEVICE = torch.device("cpu")
+
+    print(f"    Training device: {DEVICE}", flush=True)
 
     scaler = MinMaxScaler()
     sales_vals = ser["sales"].values.reshape(-1, 1)
-    scaled = scaler.fit_transform(sales_vals).flatten()
+    scaler.fit(sales_vals[:len(train)])
+    scaled = scaler.transform(sales_vals).flatten()
 
     n_train = len(train)
     n_test  = len(test)
@@ -194,14 +201,16 @@ try:
     model.train()
     for epoch in range(EPOCHS):
         epoch_loss = 0
-        for xb, yb in loader:
+        for batch_idx, (xb, yb) in enumerate(loader):
+            if batch_idx == 0:
+                print(f"    Epoch {epoch+1}/{EPOCHS}: first batch started", flush=True)
             optimizer.zero_grad()
             pred = model(xb)
             loss = criterion(pred, yb)
             loss.backward()
             optimizer.step()
             epoch_loss += loss.item()
-        if (epoch + 1) % 10 == 0:
+        if True:
             print(f"    Epoch {epoch+1}/{EPOCHS}  loss={epoch_loss/len(loader):.5f}")
 
     # ── Recursive forecast ─────────────────────────────────────────────────
@@ -226,14 +235,14 @@ try:
     all_results.append(r)
     torch.save(model.state_dict(), str(MODELS_DIR / "lstm_model.pt"))
     joblib.dump(scaler, MODELS_DIR / "lstm_scaler.pkl")
-    print("  ✅ LSTM (PyTorch) done")
+    print("   LSTM (PyTorch) done")
 except Exception as e:
-    print(f"  ⚠️ LSTM failed: {e}")
+    print(f"   LSTM failed: {e}")
     all_results.append({"model": "LSTM", "MAE": None, "RMSE": None, "MAPE": None})
 
 # ── Save results ─────────────────────────────────────────────────────────────
 results_df = pd.DataFrame(all_results)
 results_df.to_csv(MODELS_DIR / "results.csv", index=False)
-print("\n📊 Model Comparison:")
+print("\n Model Comparison:")
 print(results_df.to_string(index=False))
-print("\n✅ All models saved to models/")
+print("\n All models saved to models/")

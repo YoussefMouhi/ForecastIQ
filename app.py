@@ -16,8 +16,8 @@ import joblib
 import os
 
 st.set_page_config(
-    page_title="Retail Sales Forecast",
-    page_icon="📦",
+    page_title="ForecastIQ | Retail Sales Intelligence",
+    page_icon="assets/forecastiq_logo.png",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -70,62 +70,307 @@ def load_models():
 
 
 def make_forecast_xgb(df_ser, models, horizon=30, onpromo=0):
-    """Recursive XGBoost forecast with confidence interval."""
-    from utils.features import build_features, FEATURE_COLS
+    """Recursive XGBoost forecast without future-sales leakage."""
 
-    store = df_ser["store_nbr"].iloc[0]
-    item  = df_ser["item_nbr"].iloc[0]
+    from utils.features import build_features
 
-    future_dates = pd.date_range(df_ser["date"].max() + pd.Timedelta(1, "D"), periods=horizon)
-    future_rows = pd.DataFrame({
-        "date": future_dates,
-        "store_nbr": store,
-        "item_nbr": item,
-        "family": df_ser["family"].iloc[0],
-        "sales": np.nan,
-        "onpromotion": onpromo,
-    })
-    full = pd.concat([df_ser, future_rows], ignore_index=True).sort_values("date")
-    built = build_features(full.copy())
+    history = df_ser.sort_values("date").copy().reset_index(drop=True)
+
+    store = history["store_nbr"].iloc[0]
+    item = history["item_nbr"].iloc[0]
 
     xgb = models["xgb"]
     le_store = models["le_store"]
-    le_item  = models["le_item"]
-    xgb_feats = models["xgb_feats"]
+    le_item = models["le_item"]
+    feature_names = models["xgb_feats"]
 
-    # Encode
-    if store in le_store.classes_:
-        built["store_enc"] = le_store.transform(built["store_nbr"].astype(str)
-                                if built["store_nbr"].dtype == object
-                                else built["store_nbr"])
-    else:
-        built["store_enc"] = 0
+    future_dates = pd.date_range(
+        history["date"].max() + pd.Timedelta(days=1),
+        periods=horizon,
+        freq="D"
+    )
 
-    if item in le_item.classes_:
-        built["item_enc"] = le_item.transform(built["item_nbr"])
-    else:
-        built["item_enc"] = 0
+    predictions = []
 
-    preds, lows, highs = [], [], []
-    for i in range(horizon):
-        idx = len(df_ser) + i
-        row = built.iloc[idx:idx+1][xgb_feats]
-        p = max(0, xgb.predict(row)[0])
-        # Update lag features in built for next step
-        built.at[idx, "sales"] = p
-        if idx + 1 < len(built):
-            for lag in [1, 7, 14, 28]:
-                col = f"sales_lag_{lag}"
-                if col in built.columns and idx - lag + 1 >= 0:
-                    built.at[idx + 1, col] = built.at[max(0, idx - lag + 1), "sales"]
-        preds.append(p)
-        noise = p * 0.12 * np.random.normal(1, 0.5)
-        lows.append(max(0, p - abs(noise) * 1.5))
-        highs.append(p + abs(noise) * 1.5)
+    for future_date in future_dates:
+
+        future_row = pd.DataFrame({
+            "date": [future_date],
+            "store_nbr": [store],
+            "item_nbr": [item],
+            "family": [history["family"].iloc[0]],
+            "sales": [np.nan],
+            "onpromotion": [int(onpromo)]
+        })
+
+        combined = pd.concat(
+            [history, future_row],
+            ignore_index=True
+        )
+
+        features = build_features(combined)
+
+        features["store_enc"] = le_store.transform(
+            features["store_nbr"]
+        )
+
+        features["item_enc"] = le_item.transform(
+            features["item_nbr"]
+        )
+
+        row = features.iloc[[-1]][feature_names]
+
+        if row.isna().any().any():
+            raise ValueError(
+                "Missing XGBoost features during recursive forecasting."
+            )
+
+        prediction = max(
+            0.0,
+            float(xgb.predict(row)[0])
+        )
+
+        predictions.append(prediction)
+
+        future_row["sales"] = prediction
+
+        history = pd.concat(
+            [history, future_row],
+            ignore_index=True
+        )
+
+    predictions = np.asarray(predictions)
 
     return pd.DataFrame({
-        "date": future_dates, "forecast": preds,
-        "lower": lows, "upper": highs,
+        "date": future_dates,
+        "forecast": predictions,
+        "lower": predictions,
+        "upper": predictions
+    })
+
+
+@st.cache_resource
+def load_sarima_model(store, item):
+    from statsmodels.tsa.statespace.sarimax import SARIMAXResults
+
+    model_path = (
+        f"models/multiseries/sarima/store_{store}_{item}.pkl"
+    )
+
+    return SARIMAXResults.load(model_path)
+
+
+def make_forecast_sarima(df_ser, horizon=30, store=None, item=None):
+    """Forecast future demand using saved SARIMA parameters."""
+
+    model = load_sarima_model(store, item)
+
+    history = (
+        df_ser.sort_values("date")["sales"]
+        .to_numpy(dtype=float)
+    )
+
+    if len(history) < model.nobs:
+        raise ValueError("Insufficient historical observations.")
+
+    if len(history) > model.nobs:
+        updated = model.append(
+            history[model.nobs:],
+            refit=False
+        )
+    else:
+        updated = model
+
+    prediction = updated.get_forecast(steps=horizon)
+
+    values = np.maximum(
+        np.asarray(prediction.predicted_mean),
+        0
+    )
+
+    intervals = np.asarray(
+        prediction.conf_int(alpha=0.05)
+    )
+
+    future_dates = pd.date_range(
+        df_ser["date"].max() + pd.Timedelta(days=1),
+        periods=horizon,
+        freq="D"
+    )
+
+    return pd.DataFrame({
+        "date": future_dates,
+        "forecast": values,
+        "lower": np.maximum(intervals[:, 0], 0),
+        "upper": np.maximum(intervals[:, 1], 0),
+    })
+
+
+@st.cache_resource
+def load_prophet_model(store, item):
+    return joblib.load(
+        f"models/multiseries/prophet/store_{store}_{item}.pkl"
+    )
+
+
+def make_forecast_prophet(df_ser, horizon=30, store=None, item=None):
+    """Forecast after last historical date with the fitted Prophet model."""
+    model = load_prophet_model(store, item)
+    dates = pd.date_range(
+        df_ser["date"].max() + pd.Timedelta(days=1),
+        periods=horizon, freq="D"
+    )
+    prediction = model.predict(pd.DataFrame({"ds": dates}))
+    return pd.DataFrame({
+        "date": dates,
+        "forecast": np.maximum(prediction["yhat"].to_numpy(), 0),
+        "lower": np.maximum(prediction["yhat_lower"].to_numpy(), 0),
+        "upper": np.maximum(prediction["yhat_upper"].to_numpy(), 0),
+    })
+
+
+@st.cache_resource
+def load_lstm_model():
+    import torch
+    from torch import nn
+
+    torch.set_num_threads(2)
+
+    class GlobalLSTM(nn.Module):
+        def __init__(self, n_stores, n_items):
+            super().__init__()
+
+            self.store_embedding = nn.Embedding(n_stores, 4)
+            self.item_embedding = nn.Embedding(n_items, 6)
+
+            self.lstm = nn.LSTM(
+                1,
+                64,
+                batch_first=True
+            )
+
+            self.fc = nn.Sequential(
+                nn.Linear(64 + 4 + 6, 64),
+                nn.ReLU(),
+                nn.Linear(64, 1),
+            )
+
+        def forward(self, x, store, item):
+            out, _ = self.lstm(x)
+
+            last = out[:, -1, :]
+            store_emb = self.store_embedding(store)
+            item_emb = self.item_embedding(item)
+
+            combined = torch.cat(
+                [last, store_emb, item_emb],
+                dim=1
+            )
+
+            return self.fc(combined)
+
+    config = joblib.load(
+        "models/multiseries/lstm/global_lstm_config.pkl"
+    )
+
+    model = GlobalLSTM(
+        config["n_stores"],
+        config["n_items"]
+    )
+
+    state = torch.load(
+        "models/multiseries/lstm/global_lstm.pt",
+        map_location="cpu",
+        weights_only=True
+    )
+
+    model.load_state_dict(state)
+    model.eval()
+
+    return model, config
+
+
+def make_forecast_lstm(df_ser, horizon=30, store=None, item=None):
+    import torch
+
+    model, config = load_lstm_model()
+
+    store = int(store)
+    item = str(item)
+
+    key = (store, item)
+
+    if key not in config["scales"]:
+        raise ValueError(
+            f"No LSTM scaling configuration for Store {store} / {item}"
+        )
+
+    if store not in config["store_map"]:
+        raise ValueError(f"Unknown store: {store}")
+
+    if item not in config["item_map"]:
+        raise ValueError(f"Unknown item: {item}")
+
+    scale = config["scales"][key]
+    seq_len = config["seq_len"]
+
+    values = (
+        df_ser.sort_values("date")["sales"]
+        .to_numpy(dtype=float)
+    )
+
+    if len(values) < seq_len:
+        raise ValueError(
+            f"LSTM requires at least {seq_len} observations."
+        )
+
+    context = (values / scale).tolist()
+
+    store_tensor = torch.tensor(
+        [config["store_map"][store]],
+        dtype=torch.long
+    )
+
+    item_tensor = torch.tensor(
+        [config["item_map"][item]],
+        dtype=torch.long
+    )
+
+    predictions = []
+
+    with torch.no_grad():
+        for _ in range(horizon):
+            batch = torch.tensor(
+                context[-seq_len:],
+                dtype=torch.float32
+            ).reshape(1, seq_len, 1)
+
+            prediction = float(
+                model(
+                    batch,
+                    store_tensor,
+                    item_tensor
+                ).item()
+            )
+
+            prediction = max(prediction, 0.0)
+
+            predictions.append(prediction * scale)
+            context.append(prediction)
+
+    dates = pd.date_range(
+        df_ser["date"].max() + pd.Timedelta(days=1),
+        periods=horizon,
+        freq="D"
+    )
+
+    predictions = np.asarray(predictions)
+
+    return pd.DataFrame({
+        "date": dates,
+        "forecast": predictions,
+        "lower": predictions,
+        "upper": predictions
     })
 
 
@@ -160,7 +405,7 @@ def plot_forecast(historical, forecast_df, title):
         x=list(forecast_df["date"]) + list(forecast_df["date"][::-1]),
         y=list(forecast_df["upper"]) + list(forecast_df["lower"][::-1]),
         fill="toself", fillcolor="rgba(46,204,113,0.15)",
-        line=dict(color="rgba(0,0,0,0)"), name="95% CI", showlegend=True,
+        line=dict(color="rgba(0,0,0,0)"), name="Forecast uncertainty band", showlegend=True,
     ))
     # Forecast
     fig.add_trace(go.Scatter(
@@ -187,7 +432,7 @@ def plot_forecast(historical, forecast_df, title):
 
 # Check data exists
 if not Path("data/train.csv").exists():
-    st.error("⚠️ Data not found! Run `python data/generate_data.py` first.")
+    st.error(" Data not found! Run `python data/generate_data.py` first.")
     st.stop()
 
 df     = load_data()
@@ -195,30 +440,63 @@ models = load_models()
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.image("https://img.icons8.com/fluency/96/combo-chart.png", width=60)
-    st.title("Retail Forecast")
+    st.image("assets/forecastiq_logo.png", width=85)
+    st.title("ForecastIQ")
     st.markdown("---")
 
-    page = st.radio("📌 Navigation", [
-        "📊 Overview",
-        "🔮 Forecast",
-        "📦 Inventory",
-        "🤖 Model Comparison",
-        "🔍 EDA",
+    page = st.radio(" Navigation", [
+        " Overview",
+        " Forecast",
+        " Inventory",
+        " Model Comparison",
+        " EDA",
     ])
 
     st.markdown("---")
-    st.markdown("**🏪 Filter**")
-    stores_list = sorted(df["store_nbr"].unique())
-    items_list  = sorted(df["item_nbr"].unique())
+    st.markdown("### Filters")
 
-    sel_store = st.selectbox("Store", stores_list)
-    sel_item  = st.selectbox("Product", items_list)
-    horizon   = st.slider("Forecast horizon (days)", 7, 90, 30)
-    onpromo   = st.checkbox("On Promotion during forecast?", False)
+    with st.form("forecast_filters"):
+
+        stores_list = sorted(df["store_nbr"].unique())
+        items_list = sorted(df["item_nbr"].unique())
+
+        sel_store = st.selectbox(
+            "Store",
+            stores_list
+        )
+
+        sel_item = st.selectbox(
+            "Product",
+            items_list
+        )
+
+        selected_model = st.selectbox(
+            "Forecasting Model",
+            ["XGBoost", "SARIMA", "Prophet", "LSTM", "LSTM V2"],
+            index=0,
+            help="All four forecasting models support all 5 stores and 10 items."
+        )
+
+        horizon = st.slider(
+            "Forecast horizon (days)",
+            7,
+            90,
+            30
+        )
+
+        onpromo = st.checkbox(
+            "On Promotion during forecast?",
+            False
+        )
+
+        apply_filters = st.form_submit_button(
+            "Apply Filters",
+            type="primary",
+            use_container_width=True
+        )
 
     st.markdown("---")
-    st.caption("Built with 🐍 Python · XGBoost · Prophet · SARIMA · LSTM")
+    st.caption("Built with  Python · XGBoost · Prophet · SARIMA · LSTM")
 
 
 # ── Filter series ─────────────────────────────────────────────────────────────
@@ -237,14 +515,94 @@ def get_forecast(store, item, h, promo, has_model):
     return make_simple_forecast(s, horizon=h)
 
 has_model = "xgb" in models
-forecast_df = get_forecast(sel_store, sel_item, horizon, onpromo, has_model)
+if selected_model == "SARIMA":
+
+    try:
+        forecast_df = make_forecast_sarima(
+            ser,
+            horizon=horizon,
+            store=sel_store,
+            item=sel_item
+        )
+        active_model = "SARIMA"
+
+    except Exception as e:
+        st.error(f"SARIMA forecasting failed: {e}")
+        st.stop()
+
+elif selected_model == "XGBoost":
+
+    forecast_df = get_forecast(
+        sel_store,
+        sel_item,
+        horizon,
+        onpromo,
+        has_model
+    )
+
+    active_model = "XGBoost" if has_model else "Trend MA"
+
+elif selected_model == "Prophet":
+
+    try:
+        forecast_df = make_forecast_prophet(
+            ser,
+            horizon=horizon,
+            store=sel_store,
+            item=sel_item
+        )
+        active_model = "Prophet"
+
+    except Exception as e:
+        st.error(f"Prophet forecasting failed: {e}")
+        st.stop()
+
+
+elif selected_model == "LSTM V2":
+    try:
+        from models.lstm_v2_inference import load_v2, forecast_v2
+
+        @st.cache_resource
+        def cached_lstm_v2():
+            return load_v2()
+
+        forecast_df = forecast_v2(
+            ser,
+            horizon=horizon,
+            store=sel_store,
+            item=sel_item,
+            loaded=cached_lstm_v2(),
+        )
+        active_model = "LSTM V2"
+    except Exception as e:
+        st.error(f"LSTM V2 forecasting failed: {e}")
+        st.stop()
+
+elif selected_model == "LSTM":
+
+    try:
+        forecast_df = make_forecast_lstm(
+            ser,
+            horizon=horizon,
+            store=sel_store,
+            item=sel_item
+        )
+        active_model = "LSTM"
+
+    except Exception as e:
+        st.error(f"LSTM forecasting failed: {e}")
+        st.stop()
+
+else:
+    st.error(f"Unknown forecasting model: {selected_model}")
+    st.stop()
 
 
 # ════════════════════════════════════════════════════════════════════════════
 # PAGE: Overview
 # ════════════════════════════════════════════════════════════════════════════
-if page == "📊 Overview":
-    st.title("📊 Sales Overview Dashboard")
+if page == " Overview":
+    st.title(" Sales Overview Dashboard")
 
     total_sales  = df["sales"].sum()
     avg_daily    = df.groupby("date")["sales"].sum().mean()
@@ -284,7 +642,7 @@ if page == "📊 Overview":
         xaxis=dict(showgrid=True, gridcolor="#1e2130"),
         yaxis=dict(showgrid=True, gridcolor="#1e2130"),
         legend=dict(bgcolor="#1e2130"))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -295,7 +653,7 @@ if page == "📊 Overview":
         fig2.update_layout(plot_bgcolor="#0e1117", paper_bgcolor="#0e1117",
                            font=dict(color="#8b9dc3"), height=300,
                            legend=dict(bgcolor="#1e2130"))
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, width="stretch")
 
     with col2:
         st.markdown('<div class="section-header">Sales by Product Family</div>', unsafe_allow_html=True)
@@ -305,7 +663,7 @@ if page == "📊 Overview":
         fig3.update_layout(plot_bgcolor="#0e1117", paper_bgcolor="#0e1117",
                            font=dict(color="#8b9dc3"), height=300,
                            showlegend=False, coloraxis_showscale=False)
-        st.plotly_chart(fig3, use_container_width=True)
+        st.plotly_chart(fig3, width="stretch")
 
     st.markdown('<div class="section-header">Day-of-Week Patterns</div>', unsafe_allow_html=True)
     df["dow"] = df["date"].dt.day_name()
@@ -317,14 +675,14 @@ if page == "📊 Overview":
     fig4.update_layout(plot_bgcolor="#0e1117", paper_bgcolor="#0e1117",
                        font=dict(color="#8b9dc3"), height=300,
                        xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor="#1e2130"))
-    st.plotly_chart(fig4, use_container_width=True)
+    st.plotly_chart(fig4, width="stretch")
 
 
 # ════════════════════════════════════════════════════════════════════════════
 # PAGE: Forecast
 # ════════════════════════════════════════════════════════════════════════════
-elif page == "🔮 Forecast":
-    st.title(f"🔮 Forecast — Store {sel_store} · {sel_item}")
+elif page == " Forecast":
+    st.title(f" Forecast — Store {sel_store} · {sel_item}")
 
     # KPIs
     recent_7  = ser.tail(7)["sales"].mean()
@@ -338,7 +696,7 @@ elif page == "🔮 Forecast":
         (c2, f"Avg Forecast (next 7d)", f"{next_7:.1f}",
              f"{'▲' if delta_7>0 else '▼'} {abs(delta_7):.1f}%", "#2ecc71" if delta_7>0 else "#e74c3c"),
         (c3, f"Total Forecast ({horizon}d)", f"{total_fc:,.0f}", "units", "#8b9dc3"),
-        (c4, "Model", "XGBoost" if has_model else "Trend MA", "active", "#4c72b0"),
+        (c4, "Model", active_model, "active", "#4c72b0"),
     ]:
         col.markdown(f"""
         <div class="metric-card">
@@ -351,20 +709,20 @@ elif page == "🔮 Forecast":
     historical = ser.tail(120)
     fig = plot_forecast(historical, forecast_df,
                         f"Sales Forecast — Store {sel_store}, {sel_item} ({horizon} days)")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     # Forecast table
-    with st.expander("📋 View Forecast Table"):
+    with st.expander(" View Forecast Table"):
         disp = forecast_df.copy()
         disp["date"] = disp["date"].dt.strftime("%Y-%m-%d")
         disp = disp.rename(columns={"forecast":"Forecast","lower":"Lower CI","upper":"Upper CI"})
         disp["Forecast"]  = disp["Forecast"].round(1)
         disp["Lower CI"]  = disp["Lower CI"].round(1)
         disp["Upper CI"]  = disp["Upper CI"].round(1)
-        st.dataframe(disp, use_container_width=True)
+        st.dataframe(disp, width="stretch")
 
     # Promotion analysis
-    st.markdown('<div class="section-header">📊 Promotion Impact Analysis</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header"> Historical Promotion Impact Analysis</div>', unsafe_allow_html=True)
     promo = ser.groupby("onpromotion")["sales"].agg(["mean","std","count"]).reset_index()
     if len(promo) > 1:
         base_avg  = promo[promo.onpromotion == 0]["mean"].values[0]
@@ -374,9 +732,9 @@ elif page == "🔮 Forecast":
         with col1:
             st.markdown(f"""
             <div class="metric-card">
-              <div class="metric-label">Promotion Lift</div>
+              <div class="metric-label">Historical Promotion Lift</div>
               <div class="metric-value" style="color:#2ecc71">+{lift:.1f}%</div>
-              <div class="metric-delta" style="color:#8b9dc3">avg sales increase</div>
+              <div class="metric-delta" style="color:#8b9dc3">historical association, not causal impact</div>
             </div>
             <div class="metric-card">
               <div class="metric-label">Non-Promo Avg</div>
@@ -397,14 +755,59 @@ elif page == "🔮 Forecast":
             fig5.update_layout(plot_bgcolor="#0e1117", paper_bgcolor="#0e1117",
                                font=dict(color="#8b9dc3"), height=280,
                                yaxis=dict(showgrid=True, gridcolor="#1e2130"))
-            st.plotly_chart(fig5, use_container_width=True)
+            st.plotly_chart(fig5, width="stretch")
+
+
+    st.markdown(
+        '<div class="section-header"> Forecasted Promotion Impact</div>',
+        unsafe_allow_html=True
+    )
+
+    if active_model == "XGBoost":
+        try:
+            baseline = make_forecast_xgb(
+                ser, models, horizon=horizon, onpromo=0
+            )
+            promoted = make_forecast_xgb(
+                ser, models, horizon=horizon, onpromo=1
+            )
+
+            baseline_total = baseline["forecast"].sum()
+            promoted_total = promoted["forecast"].sum()
+
+            expected_lift = (
+                (promoted_total / baseline_total - 1) * 100
+                if baseline_total > 0 else 0
+            )
+
+            c1, c2, c3 = st.columns(3)
+
+            c1.metric("Baseline Forecast", f"{baseline_total:,.0f} units")
+            c2.metric("Promotion Forecast", f"{promoted_total:,.0f} units")
+            c3.metric("Estimated Promotion Difference", f"{expected_lift:+.1f}%")
+
+            st.caption(
+                "Model-based scenario comparison, not a causal estimate. "
+                "Both scenarios assume the promotion setting applies "
+                "throughout the forecast horizon."
+            )
+
+        except Exception as e:
+            st.warning(f"Promotion scenario comparison unavailable: {e}")
+
+    else:
+        st.info(
+            f"{active_model} does not use promotion as an explicit "
+            "forecasting input. Promotion-specific scenario comparisons "
+            "are currently available only for XGBoost."
+        )
 
 
 # ════════════════════════════════════════════════════════════════════════════
 # PAGE: Inventory
 # ════════════════════════════════════════════════════════════════════════════
-elif page == "📦 Inventory":
-    st.title(f"📦 Inventory Simulation — Store {sel_store} · {sel_item}")
+elif page == " Inventory":
+    st.title(f" Inventory Simulation — Store {sel_store} · {sel_item}")
     from utils.inventory import compute_inventory_metrics, simulate_inventory_trajectory
 
     col1, col2, col3 = st.columns(3)
@@ -426,11 +829,11 @@ elif page == "📦 Inventory":
 
     # Alert
     if metrics["needs_reorder"]:
-        st.markdown(f'<div class="alert-red">🚨 <b>REORDER ALERT</b> — Current stock ({current_stock:.0f}) is below reorder point ({metrics["reorder_point"]:.0f}). Place order immediately!</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="alert-red"> <b>REORDER ALERT</b> — Current stock ({current_stock:.0f}) is below reorder point ({metrics["reorder_point"]:.0f}). Place order immediately!</div>', unsafe_allow_html=True)
     elif metrics["stockout_prob"] and metrics["stockout_prob"] > 30:
-        st.markdown(f'<div class="alert-yellow">⚠️ <b>LOW STOCK WARNING</b> — {metrics["stockout_prob"]:.1f}% stockout risk detected.</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="alert-yellow"> <b>LOW STOCK WARNING</b> — {metrics["stockout_prob"]:.1f}% stockout risk detected.</div>', unsafe_allow_html=True)
     else:
-        st.markdown(f'<div class="alert-green">✅ <b>STOCK HEALTHY</b> — Inventory levels are adequate for the forecast period.</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="alert-green"> <b>STOCK HEALTHY</b> — Inventory levels are adequate for the forecast period.</div>', unsafe_allow_html=True)
 
     st.markdown("")
     c1, c2, c3, c4 = st.columns(4)
@@ -485,7 +888,7 @@ elif page == "📦 Inventory":
         yaxis=dict(showgrid=True, gridcolor="#1e2130"),
         yaxis2=dict(showgrid=True, gridcolor="#1e2130"),
         legend=dict(bgcolor="#1e2130"), barmode="overlay")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     fill_rate = (sim["actual_sales"].sum() / sim["forecast_demand"].sum() * 100) if sim["forecast_demand"].sum() > 0 else 100
     lost = sim["lost_sales"].sum()
@@ -503,51 +906,259 @@ elif page == "📦 Inventory":
 # ════════════════════════════════════════════════════════════════════════════
 # PAGE: Model Comparison
 # ════════════════════════════════════════════════════════════════════════════
-elif page == "🤖 Model Comparison":
-    st.title("🤖 Model Performance Comparison")
+elif page == " Model Comparison":
 
-    if "results" in models:
-        results = models["results"].dropna()
-        st.markdown('<div class="section-header">Leaderboard</div>', unsafe_allow_html=True)
+    st.title("Model Performance Comparison")
 
-        best_rmse = results.loc[results["RMSE"].idxmin(), "model"] if len(results) else "—"
-        st.markdown(f"🏆 **Best model by RMSE:** `{best_rmse}`")
+    st.info(f"Currently selected forecasting model: {active_model}")
 
-        # Styled table
-        st.dataframe(results.style.highlight_min(subset=["MAE","RMSE","MAPE"], color="#1a3a2a"),
-                     use_container_width=True, height=220)
+    st.caption(
+        "Multi-series evaluation across 5 stores and 10 items. "
+        "Forecasts start on October 1, 2020. "
+        "Metrics are pooled across all 50 store-item combinations."
+    )
+
+    results_path = Path(
+        "models/multiseries/evaluation/horizon_comparison_v2.csv"
+    )
+
+    if results_path.exists():
+
+        results_all = pd.read_csv(results_path)
+
+        required = {
+            "model", "horizon", "n_series",
+            "MAE", "RMSE", "WAPE", "n_predictions"
+        }
+
+        missing = required - set(results_all.columns)
+
+        if missing:
+            st.error(f"Missing evaluation columns: {sorted(missing)}")
+            st.stop()
+
+        horizons = sorted(
+            results_all["horizon"].dropna().astype(int).unique().tolist()
+        )
+
+        selected_horizon = st.select_slider(
+            "Evaluation horizon (days)",
+            options=horizons,
+            value=30 if 30 in horizons else horizons[0],
+            key="comparison_horizon"
+        )
+
+        results = (
+            results_all[
+                results_all["horizon"] == selected_horizon
+            ]
+            .copy()
+            .sort_values("MAE")
+            .reset_index(drop=True)
+        )
+
+        st.markdown(
+            '<div class="section-header">Model Leaderboard</div>',
+            unsafe_allow_html=True
+        )
+
+        best = results.iloc[0]
 
         col1, col2, col3 = st.columns(3)
-        for col, metric in zip([col1, col2, col3], ["MAE", "RMSE", "MAPE"]):
-            fig = go.Figure(go.Bar(
-                x=results["model"], y=results[metric],
-                marker_color=["#2ecc71" if m == metric and v == results[metric].min()
-                               else "#4c72b0" for v, m in zip(results[metric], [metric]*len(results))],
-                text=results[metric].round(2), textposition="outside",
-            ))
-            fig.update_layout(title=dict(text=metric, font=dict(color="#e0e4f0")),
-                              plot_bgcolor="#0e1117", paper_bgcolor="#0e1117",
-                              font=dict(color="#8b9dc3"), height=300,
-                              yaxis=dict(showgrid=True, gridcolor="#1e2130"))
-            col.plotly_chart(fig, use_container_width=True)
-    else:
-        st.warning("⚠️ No model results found. Run `python models/train_models.py` first.")
 
-    st.markdown('<div class="section-header">Model Architecture Overview</div>', unsafe_allow_html=True)
+        col1.metric("Best Model", best["model"])
+        col2.metric("Best MAE", f'{best["MAE"]:.2f}')
+        col3.metric("Best WAPE", f'{best["WAPE"]:.2f}%')
+
+        display = results[
+            ["model", "MAE", "RMSE", "WAPE",
+             "n_series", "n_predictions"]
+        ].rename(columns={
+            "model": "Model",
+            "n_series": "Series",
+            "n_predictions": "Predictions",
+            "WAPE": "WAPE (%)"
+        })
+
+        st.dataframe(
+            display.style.highlight_min(
+                subset=["MAE", "RMSE", "WAPE (%)"],
+                color="#1a3a2a"
+            ),
+            width="stretch",
+            hide_index=True
+        )
+
+        st.markdown(
+            '<div class="section-header">Performance Metrics</div>',
+            unsafe_allow_html=True
+        )
+
+        cols = st.columns(3)
+
+        for col, metric in zip(cols, ["MAE", "RMSE", "WAPE"]):
+
+            fig = go.Figure()
+
+            fig.add_trace(
+                go.Bar(
+                    x=results["model"],
+                    y=results[metric],
+                    marker_color=[
+                        "#2ecc71" if value == results[metric].min()
+                        else "#4c72b0"
+                        for value in results[metric]
+                    ],
+                    text=results[metric].round(2),
+                    textposition="outside"
+                )
+            )
+
+            fig.update_layout(
+                title=metric if metric != "WAPE" else "WAPE (%)",
+                plot_bgcolor="#0e1117",
+                paper_bgcolor="#0e1117",
+                font=dict(color="#8b9dc3"),
+                height=320,
+                yaxis=dict(
+                    showgrid=True,
+                    gridcolor="#1e2130"
+                ),
+                margin=dict(t=60, b=40)
+            )
+
+            col.plotly_chart(fig, width="stretch")
+
+        st.markdown(
+            '<div class="section-header">Accuracy by Forecast Horizon</div>',
+            unsafe_allow_html=True
+        )
+
+        metric_choice = st.selectbox(
+            "Metric",
+            ["MAE", "RMSE", "WAPE"],
+            key="comparison_metric"
+        )
+
+        fig = go.Figure()
+
+        colors = {
+            "XGBoost": "#2ecc71",
+            "Prophet": "#3498db",
+            "SARIMA": "#e67e22",
+            "LSTM": "#9b59b6"
+        }
+
+        for model_name in ["XGBoost", "Prophet", "SARIMA", "LSTM"]:
+
+            model_data = (
+                results_all[
+                    results_all["model"] == model_name
+                ]
+                .sort_values("horizon")
+            )
+
+            fig.add_trace(
+                go.Scatter(
+                    x=model_data["horizon"],
+                    y=model_data[metric_choice],
+                    mode="lines+markers",
+                    name=model_name,
+                    line=dict(
+                        color=colors.get(model_name, "#4c72b0"),
+                        width=3
+                    )
+                )
+            )
+
+        fig.update_layout(
+            xaxis_title="Forecast Horizon (Days)",
+            yaxis_title=(
+                metric_choice + " (%)"
+                if metric_choice == "WAPE"
+                else metric_choice
+            ),
+            plot_bgcolor="#0e1117",
+            paper_bgcolor="#0e1117",
+            font=dict(color="#8b9dc3"),
+            height=400,
+            legend=dict(orientation="h", y=1.12),
+            xaxis=dict(
+                showgrid=True,
+                gridcolor="#1e2130"
+            ),
+            yaxis=dict(
+                showgrid=True,
+                gridcolor="#1e2130"
+            )
+        )
+
+        st.plotly_chart(fig, width="stretch")
+
+        st.caption(
+            "Benchmark limitations: Models were not trained using "
+            "identical cutoffs. XGBoost evaluation used the observed "
+            "future promotion schedule. These results are preliminary "
+            "and should not be interpreted as guaranteed future accuracy."
+        )
+
+    else:
+        st.warning(
+            "Multi-series evaluation results not found. "
+            "Run models/evaluate_multiseries.py first."
+        )
+
+    st.markdown(
+        '<div class="section-header">Model Architecture Overview</div>',
+        unsafe_allow_html=True
+    )
+
     arch = pd.DataFrame([
-        {"Model": "SARIMA", "Type": "Statistical", "Strengths": "Captures trend & weekly seasonality", "When to use": "Single series, interpretability needed"},
-        {"Model": "Prophet", "Type": "Decomposition", "Strengths": "Handles holidays, missing data", "When to use": "Business seasonality, easy deployment"},
-        {"Model": "XGBoost", "Type": "ML (Gradient Boosting)", "Strengths": "Multi-series, custom features, fast", "When to use": "Retail forecasting at scale"},
-        {"Model": "LSTM", "Type": "Deep Learning", "Strengths": "Learns complex temporal patterns", "When to use": "Long sequences, sufficient data"},
+        {
+            "Model": "LSTM V2",
+            "Type": "Deep Learning — Direct Multi-Horizon",
+            "Strengths": "60-day history, calendar features, direct 90-day predictions",
+            "When to use": "Medium- and long-horizon retail forecasting"
+        },
+
+        {
+            "Model": "SARIMA",
+            "Type": "Statistical",
+            "Strengths": "Trend and weekly seasonality",
+            "When to use": "Interpretable series-specific forecasts"
+        },
+        {
+            "Model": "Prophet",
+            "Type": "Decomposition",
+            "Strengths": "Trend and multiple seasonal patterns",
+            "When to use": "Business-oriented seasonal forecasting"
+        },
+        {
+            "Model": "XGBoost",
+            "Type": "Gradient Boosting",
+            "Strengths": "Multi-series learning and custom features",
+            "When to use": "Retail forecasting across stores and items"
+        },
+        {
+            "Model": "LSTM V1",
+            "Type": "Deep Learning",
+            "Strengths": "Temporal patterns and learned embeddings",
+            "When to use": "Sequence-based demand forecasting"
+        }
     ])
-    st.dataframe(arch, use_container_width=True, hide_index=True)
+
+    st.dataframe(
+        arch,
+        width="stretch",
+        hide_index=True
+    )
 
 
 # ════════════════════════════════════════════════════════════════════════════
 # PAGE: EDA
 # ════════════════════════════════════════════════════════════════════════════
-elif page == "🔍 EDA":
-    st.title("🔍 Exploratory Data Analysis")
+elif page == " EDA":
+    st.title(" Exploratory Data Analysis")
 
     # Selected series
     st.markdown(f'<div class="section-header">Store {sel_store} · {sel_item} — Historical Sales</div>', unsafe_allow_html=True)
@@ -561,7 +1172,7 @@ elif page == "🔍 EDA":
         xaxis=dict(showgrid=True, gridcolor="#1e2130"),
         yaxis=dict(showgrid=True, gridcolor="#1e2130", title="Sales"),
         legend=dict(bgcolor="#1e2130"))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -577,7 +1188,7 @@ elif page == "🔍 EDA":
         fig6.update_layout(plot_bgcolor="#0e1117", paper_bgcolor="#0e1117",
             font=dict(color="#8b9dc3"), height=320,
             xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor="#1e2130"))
-        st.plotly_chart(fig6, use_container_width=True)
+        st.plotly_chart(fig6, width="stretch")
 
     with col2:
         st.markdown('<div class="section-header">Sales Distribution</div>', unsafe_allow_html=True)
@@ -594,7 +1205,7 @@ elif page == "🔍 EDA":
             paper_bgcolor="#0e1117", font=dict(color="#8b9dc3"),
             height=320, xaxis=dict(title="Sales"),
             legend=dict(bgcolor="#1e2130"))
-        st.plotly_chart(fig7, use_container_width=True)
+        st.plotly_chart(fig7, width="stretch")
 
     # Lag correlation
     st.markdown('<div class="section-header">Autocorrelation (Lag Features)</div>', unsafe_allow_html=True)
@@ -606,8 +1217,34 @@ elif page == "🔍 EDA":
         font=dict(color="#8b9dc3"), height=300,
         xaxis=dict(title="Lag (days)", showgrid=True, gridcolor="#1e2130"),
         yaxis=dict(title="Autocorrelation", showgrid=True, gridcolor="#1e2130"))
-    st.plotly_chart(fig8, use_container_width=True)
+    st.plotly_chart(fig8, width="stretch")
 
     # Raw data
-    with st.expander("📋 Raw Data Sample"):
-        st.dataframe(ser.tail(50), use_container_width=True)
+    with st.expander(" Raw Data Sample"):
+        st.dataframe(ser.tail(50), width="stretch")
+
+# ─────────────────────────────────────────────
+# ForecastIQ Copyright Footer
+# ─────────────────────────────────────────────
+
+st.markdown("""
+<style>
+.forecastiq-footer {
+    text-align: center;
+    padding: 25px 10px;
+    margin-top: 50px;
+    border-top: 1px solid #334155;
+    color: #CBD5E1;
+    font-size: 13px;
+}
+.forecastiq-footer strong {
+    color: #22D3EE;
+}
+</style>
+
+<div class="forecastiq-footer">
+    © 2026 <strong>Youssef MOUHI</strong>. All rights reserved.
+    <br>
+    ForecastIQ | AI-Powered Retail Demand Intelligence
+</div>
+""", unsafe_allow_html=True)

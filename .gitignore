@@ -1,0 +1,25 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+*.bak
+models/backup/
+.ipynb_checkpoints/
+.pytest_cache/
+
+models/lstm_section_backup.txt
+
+README.original.md
+
+# Large trained model artifacts
+models/*.pkl
+models/*.pt
+models/multiseries/
+
+# Local testing
+app_crash_test.py
