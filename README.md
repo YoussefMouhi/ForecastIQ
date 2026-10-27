@@ -182,18 +182,6 @@ ForecastIQ includes:
 - Training-only data normalization
 - Forecasting model evaluation
 
-## Original Project Attribution
-
-ForecastIQ was developed using the Retail Sales Forecasting System
-by kwerlr as its starting point.
-
-Original repository:
-https://github.com/kwerlr/retail-sales-forecasting
-
-Redistribution permissions for the original source code have not
-yet been confirmed. Public redistribution requires an applicable
-license or permission from the original author.
-
 ## Author
 
 **Youssef MOUHI**
