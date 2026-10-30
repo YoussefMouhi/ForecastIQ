@@ -45,6 +45,34 @@ st.markdown("""
                    border-radius: 8px; padding: 10px 14px; color: #e74c3c; }
     .alert-yellow{ background: #3a3a1a; border: 1px solid #f39c12;
                    border-radius: 8px; padding: 10px 14px; color: #f39c12; }
+
+/* ForecastIQ readability improvements */
+[data-testid="stAppViewContainer"] {
+    color: #F1F5FF;
+}
+
+[data-testid="stSidebar"] {
+    background-color: #171C29;
+}
+
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] p,
+[data-testid="stSidebar"] span {
+    color: #E8EDF8;
+}
+
+h1, h2, h3 {
+    color: #F5F7FF !important;
+    font-weight: 700;
+}
+
+[data-testid="stMetricLabel"] {
+    color: #B8C5DC;
+}
+
+[data-testid="stMetricValue"] {
+    color: #FFFFFF;
+}
 </style>
 """, unsafe_allow_html=True)
 
