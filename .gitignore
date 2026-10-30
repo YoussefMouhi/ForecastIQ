@@ -23,3 +23,12 @@ models/multiseries/
 
 # Local testing
 app_crash_test.py
+
+# Local dashboard backup
+app.before_v2_integration.py
+
+# Generated validation artifacts
+validation/generated_v2/
+validation/models_v2/
+validation/baseline/train_original.csv
+validation/baseline/stores_original.csv
