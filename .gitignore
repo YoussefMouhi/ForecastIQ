@@ -32,3 +32,6 @@ validation/generated_v2/
 validation/models_v2/
 validation/baseline/train_original.csv
 validation/baseline/stores_original.csv
+
+# Generated release archives
+releases/*.zip
