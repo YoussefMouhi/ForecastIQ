@@ -588,3 +588,23 @@ Project development areas include forecasting, deep learning, model evaluation, 
 © 2026 Youssef MOUHI. All rights reserved for original contributions.
 
 </div>
+---
+
+## Installation
+
+Requires Python 3.12.
+
+1. Clone the repository and install dependencies.
+2. Download `forecastiq-models-v2.zip` from GitHub Releases.
+3. Place the archive inside the `releases/` directory.
+4. Run `python scripts/install_models.py`.
+5. Launch with `./run_forecastiq.sh`.
+
+## Project Development
+
+ForecastIQ extends an existing retail forecasting foundation with
+additional forecasting architectures, model evaluation workflows,
+dashboard improvements, and deployment tooling.
+
+Original contributors are recorded in the repository history.
+
