@@ -59,11 +59,27 @@ def load_data():
 @st.cache_resource
 def load_models():
     m = {}
-    if (p := Path("models/xgb_model.pkl")).exists():
-        m["xgb"]      = joblib.load(p)
-        m["le_store"]  = joblib.load("models/le_store.pkl")
-        m["le_item"]   = joblib.load("models/le_item.pkl")
+    v2_dir = Path("validation/models_v2")
+    v2_files = [
+        v2_dir / "xgboost_model.joblib",
+        v2_dir / "encoders.joblib",
+        v2_dir / "features.joblib",
+    ]
+
+    if all(p.exists() for p in v2_files):
+        m["xgb"] = joblib.load(v2_files[0])
+        encoders = joblib.load(v2_files[1])
+        m["le_store"] = encoders["store_nbr"]
+        m["le_item"] = encoders["item_nbr"]
+        m["xgb_feats"] = joblib.load(v2_files[2])
+        m["xgb_version"] = "V2"
+
+    elif (p := Path("models/xgb_model.pkl")).exists():
+        m["xgb"] = joblib.load(p)
+        m["le_store"] = joblib.load("models/le_store.pkl")
+        m["le_item"] = joblib.load("models/le_item.pkl")
         m["xgb_feats"] = joblib.load("models/xgb_features.pkl")
+        m["xgb_version"] = "Original"
     if (p := Path("models/results.csv")).exists():
         m["results"] = pd.read_csv(p)
     return m
@@ -72,7 +88,7 @@ def load_models():
 def make_forecast_xgb(df_ser, models, horizon=30, onpromo=0):
     """Recursive XGBoost forecast without future-sales leakage."""
 
-    from utils.features import build_features
+    from utils.features_v2 import build_features
 
     history = df_ser.sort_values("date").copy().reset_index(drop=True)
 
