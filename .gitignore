@@ -35,3 +35,4 @@ validation/baseline/stores_original.csv
 
 # Generated release archives
 releases/*.zip
+app.py.backup
