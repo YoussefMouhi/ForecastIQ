@@ -25,7 +25,7 @@ OUT.mkdir(parents=True, exist_ok=True)
 
 
 def recursive_xgb(history, dates, promo, artifacts):
-    from utils.features import build_features
+    from utils.features_v2 import build_features
     model, le_store, le_item, feature_cols = artifacts
     history = history.copy().reset_index(drop=True)
     preds = []
