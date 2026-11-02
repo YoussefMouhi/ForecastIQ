@@ -1,4 +1,18 @@
 """
+LEGACY TRAINING SCRIPT
+
+Retained for historical compatibility.
+For current ForecastIQ training, use:
+- models/train_xgboost_v2.py
+- models/train_statistical_v2.py
+- models/train_global_lstm.py
+- models/train_global_lstm_v2.py
+- models/train_global_lstm_v2_production.py
+
+Do not use this script for new production training.
+"""
+
+"""
 Train & evaluate all models. Saves results to models/results.csv.
 Run: python models/train_models.py
 """

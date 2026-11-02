@@ -476,7 +476,7 @@ def plot_forecast(historical, forecast_df, title):
 
 # Check data exists
 if not Path("data/train.csv").exists():
-    st.error(" Data not found! Run `python data/generate_data.py` first.")
+    st.error(" Data not found! Run `python data/generate_data_v2.py` first.")
     st.stop()
 
 df     = load_data()
@@ -852,7 +852,7 @@ elif page == " Forecast":
 # ════════════════════════════════════════════════════════════════════════════
 elif page == " Inventory":
     st.title(f" Inventory Simulation — Store {sel_store} · {sel_item}")
-    from utils.inventory import compute_inventory_metrics, simulate_inventory_trajectory
+    from utils.inventory_v2 import compute_inventory_metrics, simulate_inventory_trajectory
 
     col1, col2, col3 = st.columns(3)
     with col1:
